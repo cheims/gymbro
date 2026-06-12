@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GymBro" />
+  <title>GymBro · Tu entrenador personal</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Pantalla de bienvenida / onboarding -->
+  <div id="onboarding" class="onboarding hidden">
+    <div class="onboarding-card">
+      <div class="brand"><span class="logo">💪</span> GymBro</div>
+      <h1>¡Bienvenido!</h1>
+      <p class="muted">Configura tu perfil para personalizar tus rutinas, calcular tu IMC y recomendarte pesos.</p>
+      <form id="onboardingForm" class="form">
+        <label>Nombre
+          <input type="text" name="name" placeholder="Tu nombre" autocomplete="off" required />
+        </label>
+        <div class="grid-2">
+          <label>Sexo
+            <select name="sex" required>
+              <option value="hombre">Hombre</option>
+              <option value="mujer">Mujer</option>
+            </select>
+          </label>
+          <label>Edad
+            <input type="number" name="age" min="12" max="100" placeholder="años" required />
+          </label>
+        </div>
+        <div class="grid-2">
+          <label>Altura (cm)
+            <input type="number" name="height" min="120" max="230" placeholder="cm" required />
+          </label>
+          <label>Peso actual (kg)
+            <input type="number" name="weight" min="30" max="300" step="0.1" placeholder="kg" required />
+          </label>
+        </div>
+        <label>Objetivo de peso (kg)
+          <input type="number" name="goalWeight" min="30" max="300" step="0.1" placeholder="kg" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Empezar 🚀</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- App principal -->
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand-sm"><span class="logo">💪</span> GymBro</div>
+        <button id="reminderBadge" class="reminder-badge hidden" title="Toca registrar tu peso">⏰ Pesaje pendiente</button>
+      </div>
+    </header>
+
+    <main id="view" class="view"><!-- contenido dinámico --></main>
+
+    <nav class="tabbar">
+      <button class="tab active" data-view="home"><span class="ico">🏠</span><span>Inicio</span></button>
+      <button class="tab" data-view="routines"><span class="ico">🏋️</span><span>Rutinas</span></button>
+      <button class="tab" data-view="progress"><span class="ico">📈</span><span>Progreso</span></button>
+      <button class="tab" data-view="profile"><span class="ico">👤</span><span>Perfil</span></button>
+    </nav>
+  </div>
+
+  <!-- Reproductor de entrenamiento (overlay a pantalla completa) -->
+  <div id="player" class="player hidden"></div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

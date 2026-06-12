@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs / temporales
+*.log
+node_modules/
+
+# Datos exportados locales
+gymbro-datos-*.json

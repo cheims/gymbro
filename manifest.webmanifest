@@ -1,0 +1,20 @@
+{
+  "name": "GymBro · Entrenador personal",
+  "short_name": "GymBro",
+  "description": "Crea rutinas por tiempo y nivel, calcula tu IMC, controla tu peso y recibe recomendaciones de carga.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
