@@ -114,6 +114,7 @@ const TEMPLATES = [
 
 /* ---------------- Estado ---------------- */
 const STORE_KEY = 'gymbro_state_v1';
+const SYNC_KEY = 'gymbro_sync_v1';   // credenciales (token/gist) — NUNCA se exportan ni se suben
 let state = null;
 
 function defaultState() {
@@ -123,6 +124,7 @@ function defaultState() {
     customRoutines: [],
     settings: { reminderDays: 7, lastWeighIn: null },
     history: [],            // { routineId, name, date, durationSec }
+    meta: { updatedAt: 0 }, // marca de tiempo para sincronización (último cambio local)
   };
 }
 
@@ -135,8 +137,17 @@ function loadState() {
   if (!state.weights) state.weights = [];
   if (!state.customRoutines) state.customRoutines = [];
   if (!state.history) state.history = [];
+  if (!state.meta) state.meta = { updatedAt: Date.now() };
 }
-function saveState() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+// opts.fromRemote: true cuando el estado viene de la nube (no re-marcar ni re-subir)
+function saveState(opts = {}) {
+  if (!opts.fromRemote) {
+    state.meta = state.meta || {};
+    state.meta.updatedAt = Date.now();
+  }
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  if (!opts.fromRemote && syncEnabled()) scheduleCloudPush();
+}
 
 /* ---------------- Utilidades ---------------- */
 const $ = (sel, ctx = document) => ctx.querySelector(sel);
@@ -929,6 +940,8 @@ function renderProfile() {
       <p class="muted" style="font-size:.78rem;margin:.5rem 0 0;">Te mostraremos un aviso en la barra superior cuando toque controlar tu peso y actualizar tus métricas.</p>
     </div>
 
+    ${renderSyncCard()}
+
     <div class="card">
       <h2>Datos</h2>
       <div class="row-btns" style="margin-bottom:.6rem;">
@@ -937,8 +950,31 @@ function renderProfile() {
       </div>
       <button class="btn btn-danger btn-block btn-sm" data-act="reset">🗑️ Borrar todos los datos</button>
     </div>
-    <p class="muted center" style="font-size:.74rem;">GymBro · Tus datos se guardan solo en este dispositivo.<br/>Las recomendaciones de peso son orientativas, no consejo médico.</p>
+    <p class="muted center" style="font-size:.74rem;">GymBro · Tus datos se guardan en este dispositivo y, si activas la sincronización, en tu Gist privado de GitHub.<br/>Las recomendaciones de peso son orientativas, no consejo médico.</p>
   `;
+}
+
+function renderSyncCard() {
+  const creds = getSyncCreds();
+  if (creds && creds.token && creds.gistId) {
+    const last = creds.lastSync ? new Date(creds.lastSync).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+    return `
+    <div class="card">
+      <div class="card-head"><h2>☁️ Sincronización</h2><span class="pill pill-green">Activada</span></div>
+      <p class="muted" style="font-size:.82rem;margin:.2rem 0 .7rem;">Tus datos se guardan en un Gist privado de tu cuenta de GitHub. Entra con el mismo token en otros dispositivos para tenerlos sincronizados.</p>
+      <div class="kv"><span class="k">Último sync</span><span>${last}</span></div>
+      <div class="row-btns" style="margin-top:.8rem;">
+        <button class="btn btn-sm btn-primary" data-act="sync-now">🔄 Sincronizar ahora</button>
+        <button class="btn btn-sm btn-danger" data-act="sync-off">Desactivar</button>
+      </div>
+    </div>`;
+  }
+  return `
+    <div class="card">
+      <div class="card-head"><h2>☁️ Sincronización</h2><span class="pill pill-gray">Desactivada</span></div>
+      <p class="muted" style="font-size:.82rem;margin:.2rem 0 .7rem;">Guarda tus datos en un fichero privado de tu cuenta de GitHub para acceder a ellos desde cualquier dispositivo. Gratis y privado.</p>
+      <button class="btn btn-primary btn-block btn-sm" data-act="sync-on">Activar sincronización en la nube</button>
+    </div>`;
 }
 
 function openProfileEditor() {
@@ -1047,6 +1083,9 @@ function bindView() {
         case 'export': exportData(); break;
         case 'import': importData(); break;
         case 'reset': resetAll(); break;
+        case 'sync-on': openSyncSetup(); break;
+        case 'sync-now': syncNow(); break;
+        case 'sync-off': syncOff(); break;
       }
     });
   });
@@ -1077,19 +1116,173 @@ function delRoutine(id) {
   setView('routines');
 }
 function resetAll() {
-  if (!confirm('Esto borrará TODOS tus datos (perfil, pesajes, rutinas). ¿Continuar?')) return;
+  if (!confirm('Esto borrará TODOS tus datos (perfil, pesajes, rutinas) en este dispositivo. ¿Continuar?')) return;
   localStorage.removeItem(STORE_KEY);
+  clearSyncCreds();
   state = defaultState();
   location.reload();
 }
 
 /* ============================================================
+   SINCRONIZACIÓN EN LA NUBE (Gist privado de GitHub)
+   ============================================================ */
+const GIST_FILENAME = 'gymbro-data.json';
+const GIST_DESC = 'GymBro · datos de la app (no editar a mano)';
+
+function getSyncCreds() {
+  try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || null; } catch (e) { return null; }
+}
+function setSyncCreds(c) { localStorage.setItem(SYNC_KEY, JSON.stringify(c)); }
+function clearSyncCreds() { localStorage.removeItem(SYNC_KEY); }
+function syncEnabled() { const c = getSyncCreds(); return !!(c && c.token && c.gistId); }
+
+async function ghApi(path, opts = {}, token) {
+  const res = await fetch('https://api.github.com' + path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(opts.headers || {}),
+    },
+  });
+  return res;
+}
+
+// Payload que se guarda en el Gist (estado completo, sin credenciales)
+function syncPayload() { return JSON.stringify(state, null, 2); }
+
+// Activar: valida token, busca un Gist existente o lo crea
+async function cloudEnable(token) {
+  token = (token || '').trim();
+  if (!token) throw new Error('Token vacío');
+  // Validar token y buscar gist existente
+  const listRes = await ghApi('/gists?per_page=100', {}, token);
+  if (listRes.status === 401) throw new Error('Token no válido o sin permiso de Gist.');
+  if (!listRes.ok) throw new Error('GitHub respondió ' + listRes.status);
+  const gists = await listRes.json();
+  let gist = gists.find(g => g.files && g.files[GIST_FILENAME]);
+
+  if (gist) {
+    // Ya existe: traemos sus datos (la nube manda al vincular un dispositivo nuevo)
+    const full = await (await ghApi('/gists/' + gist.id, {}, token)).json();
+    const content = full.files[GIST_FILENAME].content;
+    setSyncCreds({ token, gistId: gist.id, lastSync: Date.now() });
+    try {
+      const remote = JSON.parse(content);
+      if (remote && remote.profile) { state = remote; saveState({ fromRemote: true }); }
+      else { await cloudPushNow(); }
+    } catch (e) { await cloudPushNow(); }
+    return { mode: 'linked' };
+  } else {
+    // No existe: lo creamos con los datos locales
+    const createRes = await ghApi('/gists', {
+      method: 'POST',
+      body: JSON.stringify({ description: GIST_DESC, public: false, files: { [GIST_FILENAME]: { content: syncPayload() } } }),
+    }, token);
+    if (!createRes.ok) throw new Error('No se pudo crear el Gist (' + createRes.status + ')');
+    const created = await createRes.json();
+    setSyncCreds({ token, gistId: created.id, lastSync: Date.now() });
+    return { mode: 'created' };
+  }
+}
+
+let pushTimer = null;
+function scheduleCloudPush() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => { cloudPushNow().catch(() => {}); }, 1500);
+}
+async function cloudPushNow() {
+  const c = getSyncCreds();
+  if (!c || !c.token || !c.gistId) return;
+  const res = await ghApi('/gists/' + c.gistId, {
+    method: 'PATCH',
+    body: JSON.stringify({ files: { [GIST_FILENAME]: { content: syncPayload() } } }),
+  }, c.token);
+  if (res.ok) { c.lastSync = Date.now(); setSyncCreds(c); }
+  else if (res.status === 401) { toast('Sync: token caducado'); }
+  return res.ok;
+}
+async function cloudPull() {
+  const c = getSyncCreds();
+  if (!c || !c.token || !c.gistId) return false;
+  const res = await ghApi('/gists/' + c.gistId, {}, c.token);
+  if (!res.ok) return false;
+  const full = await res.json();
+  const file = full.files && full.files[GIST_FILENAME];
+  if (!file) return false;
+  let content = file.content;
+  if (file.truncated && file.raw_url) content = await (await fetch(file.raw_url)).text();
+  try {
+    const remote = JSON.parse(content);
+    if (!remote || !remote.profile) return false;
+    const remoteAt = (remote.meta && remote.meta.updatedAt) || 0;
+    const localAt = (state.meta && state.meta.updatedAt) || 0;
+    if (remoteAt > localAt) { state = remote; saveState({ fromRemote: true }); }
+    c.lastSync = Date.now(); setSyncCreds(c);
+    return true;
+  } catch (e) { return false; }
+}
+
+// Interacción UI
+function openSyncSetup() {
+  const tokenUrl = 'https://github.com/settings/tokens/new?scopes=gist&description=GymBro';
+  const body = `
+    <div class="form">
+      <p class="muted" style="font-size:.85rem;margin:0;">Conecta tus datos a un <b>Gist privado</b> de tu cuenta de GitHub. Necesitas un token con permiso de <b>Gist</b> (se crea en 20 segundos):</p>
+      <ol class="muted" style="font-size:.82rem;padding-left:1.1rem;margin:.2rem 0;line-height:1.5;">
+        <li>Abre <a href="${tokenUrl}" target="_blank" rel="noopener">esta página</a> (ya lleva el permiso <code>gist</code> marcado).</li>
+        <li>Pon caducidad (p. ej. 90 días o "No expiration") y pulsa <b>Generate token</b>.</li>
+        <li>Copia el token (<code>ghp_…</code>) y pégalo aquí abajo.</li>
+      </ol>
+      <label>Token de GitHub
+        <input type="password" id="sync-token" placeholder="ghp_..." autocomplete="off" />
+      </label>
+      <button class="btn btn-primary btn-block" id="sync-connect">Conectar y sincronizar</button>
+      <p class="muted" style="font-size:.72rem;margin:0;">El token se guarda solo en este dispositivo. No se sube al Gist ni se incluye al exportar. Puedes revocarlo cuando quieras en GitHub.</p>
+    </div>`;
+  openSheet('Activar sincronización', body, sheet => {
+    $('#sync-connect', sheet).addEventListener('click', async () => {
+      const btn = $('#sync-connect', sheet);
+      const token = $('#sync-token', sheet).value;
+      if (!token.trim()) { toast('Pega tu token'); return; }
+      btn.disabled = true; btn.textContent = 'Conectando…';
+      try {
+        const r = await cloudEnable(token);
+        closeSheet();
+        toast(r.mode === 'linked' ? 'Sincronizado ✅ datos recuperados' : 'Sincronización activada ✅');
+        render();
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Conectar y sincronizar';
+        toast('Error: ' + e.message);
+      }
+    });
+  });
+}
+async function syncNow() {
+  toast('Sincronizando…');
+  try { await cloudPull(); await cloudPushNow(); toast('Sincronizado ✅'); render(); }
+  catch (e) { toast('Error de sincronización'); }
+}
+function syncOff() {
+  if (!confirm('¿Desactivar la sincronización en este dispositivo? Tus datos seguirán en el Gist y en local.')) return;
+  clearSyncCreds();
+  toast('Sincronización desactivada');
+  render();
+}
+
+/* ============================================================
    ARRANQUE
    ============================================================ */
-function boot() {
+async function boot() {
   loadState();
-  if (!state.profile) showOnboarding();
-  else startApp();
+  if (!state.profile) { showOnboarding(); return; }
+  startApp();
+  // Si hay sincronización, traer la última versión de la nube
+  if (syncEnabled()) {
+    try { const changed = await cloudPull(); if (changed) render(); } catch (e) {}
+  }
 }
 boot();
 
